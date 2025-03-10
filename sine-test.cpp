@@ -35,14 +35,15 @@
 
 // DDS parameters
 #define two32 4294967296.0 // 2^32
-// Reduce sample rate by 10x for testing
-#define Fs 250     // 250Hz sample rate (10x slower)
-#define DELAY 4000 // 4000µs between samples (1/250 = 0.004)
+// Adjust sample rate and delay for LFO application
+// For LFOs, we don't need high update rates
+#define Fs 100      // 100Hz is plenty for LFOs under 10Hz
+#define DELAY 10000 // 10,000µs = 10ms between samples (1/100 = 0.01)
 
-// the DDS units:
-volatile unsigned int phase_accum_main;
-// Adjust phase increment to maintain the same 20Hz output
-volatile unsigned int phase_incr_main = (uint32_t)((20.0 * two32) / Fs + 0.5);
+// Replace the single phase accumulator and increment with arrays
+// the DDS units for each channel:
+volatile unsigned int phase_accum[4] = {0, 0, 0, 0}; // Phase accumulators for each channel
+volatile unsigned int phase_incr[4];                 // Phase increments for each channel
 
 uint16_t DAC_data; // output value to the DAC
 
@@ -54,6 +55,12 @@ static uint16_t dac_values[4];
 volatile int sin_table[sine_table_size];
 
 volatile int isr_counter = 0; // to test the ISR is running correctly
+
+// LFO frequencies for each channel (in Hz)
+float lfo_freq[4] = {1.0, 1.0, 1.0, 1.0}; // All channels at 1Hz
+
+// LFO phase offsets (0-1, where 1 = 360 degrees)
+float lfo_phase[4] = {0.0, 0.25, 0.5, 0.75}; // 0°, 90°, 180°, 270°
 
 // global class object to be accessed by the ISR
 // configure the MCP4728 using the class MCP4728
@@ -90,18 +97,22 @@ static void alarm_irq(void)
         isr_counter++;
         return;
     }
-    // INCREMENT THE PHASE ACCUMULATOR - this line was missing!
-    phase_accum_main += phase_incr_main;
+    // Calculate values for all four channels
+    for (int ch = 0; ch < 4; ch++)
+    {
+        // Increment the phase accumulators for each channel
+        phase_accum[ch] += phase_incr[ch];
 
-    uint32_t phase_index = phase_accum_main >> 22;                 // For 1024-point table
-    uint32_t fraction = (phase_accum_main >> 14) & 0xFF;           // Fractional part for interpolation
-    int v1 = sin_table[phase_index & (sine_table_size - 1)];       // Change to int (signed)
-    int v2 = sin_table[(phase_index + 1) & (sine_table_size - 1)]; // Change to int (signed)
-    int32_t interpolated = v1 + ((v2 - v1) * fraction) / 256;
-    DAC_data = (interpolated + 2048) & 0x0FFF;
+        // Calculate sine for this channel
+        uint32_t phase_index = phase_accum[ch] >> 22;       // For 1024-point table
+        uint32_t fraction = (phase_accum[ch] >> 14) & 0xFF; // Fraction for interpolation
+        int v1 = sin_table[phase_index & (sine_table_size - 1)];
+        int v2 = sin_table[(phase_index + 1) & (sine_table_size - 1)];
+        int32_t interpolated = v1 + ((v2 - v1) * fraction) / 256;
 
-    // Set all array values to the same value
-    dac_values[0] = dac_values[1] = dac_values[2] = dac_values[3] = DAC_data;
+        // Convert to 12-bit unsigned for DAC
+        dac_values[ch] = (interpolated + 2048) & 0x0FFF;
+    }
 
     // Try with a small busy wait before sending data
     busy_wait_us(50); // Small delay before I2C transaction
@@ -167,8 +178,17 @@ int main()
             printf("Failed to initialize channel %d\n", ch);
         }
     }
-    busy_wait_ms(100); // Give the DAC time to settle
 
+    // Calculate phase increments based on frequencies
+    for (int ch = 0; ch < 4; ch++)
+    {
+        phase_incr[ch] = (uint32_t)((lfo_freq[ch] * two32) / Fs + 0.5);
+
+        // Apply initial phase offsets
+        phase_accum[ch] = (uint32_t)(lfo_phase[ch] * two32);
+
+        printf("Channel %d: %0.1f Hz (phase: %0.2f)\n", ch, lfo_freq[ch], lfo_phase[ch]);
+    }
     // Enable the interrupt for the alarm (we're using Alarm 0)
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
     // Associate an interrupt handler with the ALARM_IRQ
