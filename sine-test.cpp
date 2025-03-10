@@ -12,9 +12,9 @@
  */
 
 #define I2C_PORT i2c0
-#define I2C_SDA_PIN 4   // GPIO4 (pin 6)
-#define I2C_SCL_PIN 5   // GPIO5 (pin 7)
-#define I2C_FREQ 400000 // 400 kHz
+#define I2C_SDA_PIN 4    // GPIO4 (pin 6)
+#define I2C_SCL_PIN 5    // GPIO5 (pin 7)
+#define I2C_FREQ 1000000 // 1000 kHz
 
 // additional connections of the MCP4728
 // VDD to 5V
@@ -82,7 +82,7 @@ MCP4728 dac(I2C_PORT, MCP4728_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, LDAC_PIN, RDY_PIN)
  * The GPIO 20 (ISR_GPIO) is toggled to measure the ISR time spent.
  * The ISR will skip the update if the DAC is not ready.
  *
- * The current implementation takes 115uS to execute the ISR.
+ * The current implementation takes 170uS to execute the ISR at 1Mhz I2C frequency.
  */
 static void alarm_irq(void)
 {
