@@ -36,7 +36,7 @@
 // DDS parameters
 #define two32 4294967296.0 // 2^32
 #define Fs 2000            // 2kHz sample rate (1/0.0005 seconds)
-#define DELAY 500          // 1/Fs (in microseconds)
+#define DELAY 250          // 1/Fs (in microseconds). We will use 250uS instead
 // the DDS units:
 volatile unsigned int phase_accum_main;
 volatile unsigned int phase_incr_main = (100.0 * two32) / Fs; // 100 Hz sine wave
@@ -46,6 +46,8 @@ uint16_t DAC_data; // output value to the DAC
 // DDS sine table
 #define sine_table_size 256
 volatile int sin_table[sine_table_size];
+
+volatile int isr_counter = 0; // to test the ISR is running correctly
 
 // global class object to be accessed by the ISR
 // configure the MCP4728 using the class MCP4728
@@ -81,10 +83,26 @@ static void alarm_irq(void)
     DAC_data = (sin_table[phase_accum_main >> 24] + 2048) & 0x0FFF;
 
     // Send the DAC data to the DAC on the object dac
-    dac.setVoltage(MCP4728::CHANNEL_A, DAC_data, MCP4728::VREF_INT, MCP4728::GAIN_1X, false);
+    dac.setChannel(MCP4728::CHANNEL_A, DAC_data, MCP4728::VREF_INT, MCP4728::GAIN_1X);
 
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0);
+}
+
+void scan_i2c()
+{
+    printf("I2C Bus Scan\n");
+    for (int addr = 0; addr < 128; addr++)
+    {
+        int ret;
+        uint8_t rxdata;
+        ret = i2c_read_blocking(I2C_PORT, addr, &rxdata, 1, false);
+        if (ret >= 0)
+        {
+            printf("Device found at address 0x%02x\n", addr);
+        }
+    }
+    printf("Scan complete\n");
 }
 
 /*
@@ -114,6 +132,7 @@ int main()
 
     // Initialize I2C hardware first
     i2c_init(I2C_PORT, I2C_FREQ);
+
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA_PIN);
@@ -126,10 +145,8 @@ int main()
         // Add error handling here
     }
 
-    // we will use the channel A of the DAC, so we will set the channel to CHANNEL_A
-    // The voltage reference is VREF_INTERNAL and we will have a gain of GAIN_1X
-    // The storeEEPROM is false as we do not want to store the settings in the EEPROM
-    dac.setVoltage(MCP4728::CHANNEL_A, 0, MCP4728::VREF_INT, MCP4728::GAIN_1X, false);
+    // Add this after i2c_init() in main()
+    scan_i2c();
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
@@ -141,7 +158,13 @@ int main()
     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
     // Nothing happening here
     while (1)
-    {
-    }
-    return 0;
+    { // Add opening brace
+      // for (int i = 0; i < 4096; i += 512)
+      // {
+      //     printf("Setting DAC to %d\n", i);
+      //     // Use setChannel instead of setVoltage
+      //     dac.setChannel(MCP4728::CHANNEL_A, i, MCP4728::VREF_INT, MCP4728::GAIN_1X);
+      //     busy_wait_ms(1000); // Hold each voltage for 1 second
+      // }
+    } // Add closing brace
 }
