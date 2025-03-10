@@ -35,16 +35,19 @@
 
 // DDS parameters
 #define two32 4294967296.0 // 2^32
-// Increase sample rate from 2kHz to 5kHz
-#define Fs 5000   // 5kHz sample rate (1/0.0002 seconds)
-#define DELAY 200 // 200µs between samples (1/5000 = 0.0002)
+// Reduce sample rate by 10x for testing
+#define Fs 250     // 250Hz sample rate (10x slower)
+#define DELAY 4000 // 4000µs between samples (1/250 = 0.004)
 
 // the DDS units:
 volatile unsigned int phase_accum_main;
-// Keep Fs=2000, but generate a 20Hz wave instead:
+// Adjust phase increment to maintain the same 20Hz output
 volatile unsigned int phase_incr_main = (uint32_t)((20.0 * two32) / Fs + 0.5);
 
 uint16_t DAC_data; // output value to the DAC
+
+// Define a static array to hold DAC values (outside the ISR)
+static uint16_t dac_values[4];
 
 // DDS sine table
 #define sine_table_size 1024 // Increase from 256 to 1024
@@ -79,6 +82,14 @@ static void alarm_irq(void)
     // Reset the alarm register
     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
 
+    // Check if DAC is ready before processing
+    if (!dac.isReady())
+    {
+        // Skip this update if device is busy
+        gpio_put(ISR_GPIO, 0);
+        isr_counter++;
+        return;
+    }
     // INCREMENT THE PHASE ACCUMULATOR - this line was missing!
     phase_accum_main += phase_incr_main;
 
@@ -89,11 +100,21 @@ static void alarm_irq(void)
     int32_t interpolated = v1 + ((v2 - v1) * fraction) / 256;
     DAC_data = (interpolated + 2048) & 0x0FFF;
 
-    // Send the DAC data to the DAC on the object dac
-    dac.setChannel(MCP4728::CHANNEL_A, DAC_data, MCP4728::VREF_INT, MCP4728::GAIN_1X);
+    // Set all array values to the same value
+    dac_values[0] = dac_values[1] = dac_values[2] = dac_values[3] = DAC_data;
 
+    // Try with a small busy wait before sending data
+    busy_wait_us(50); // Small delay before I2C transaction
+
+    // Update all channels
+    dac.setAllChannels(dac_values, MCP4728::VREF_INT, MCP4728::GAIN_1X, false);
+
+    dac.triggerLDAC();
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0);
+
+    // In your alarm_irq function, before exiting:
+    isr_counter++;
 }
 
 /*
@@ -135,6 +156,19 @@ int main()
         // Add error handling here
     }
 
+    printf("Setting initial values for all channels...\n");
+    // Initialize all channels to mid-point
+    for (int ch = 0; ch < 4; ch++)
+    {
+        bool success = dac.setChannel(static_cast<MCP4728::Channel>(ch), 2048,
+                                      MCP4728::VREF_INT, MCP4728::GAIN_1X);
+        if (!success)
+        {
+            printf("Failed to initialize channel %d\n", ch);
+        }
+    }
+    busy_wait_ms(100); // Give the DAC time to settle
+
     // Enable the interrupt for the alarm (we're using Alarm 0)
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
     // Associate an interrupt handler with the ALARM_IRQ
@@ -145,13 +179,9 @@ int main()
     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
     // Nothing happening here
     while (1)
-    { // Add opening brace
-      // for (int i = 0; i < 4096; i += 512)
-      // {
-      //     printf("Setting DAC to %d\n", i);
-      //     // Use setChannel instead of setVoltage
-      //     dac.setChannel(MCP4728::CHANNEL_A, i, MCP4728::VREF_INT, MCP4728::GAIN_1X);
-      //     busy_wait_ms(1000); // Hold each voltage for 1 second
-      // }
-    } // Add closing brace
+    {
+        // Just monitor or do nothing
+        busy_wait_ms(5000);
+        printf("ISR still running, counter: %d\n", isr_counter);
+    }
 }

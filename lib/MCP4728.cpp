@@ -113,10 +113,10 @@ bool MCP4728::setAllChannels(uint16_t values[4], Vref vref, Gain gain, bool stor
         return success;
     }
 
-    // Fast write for all channels (only works for non-EEPROM writes)
+    // Fast write for all channels (non-EEPROM writes)
     uint8_t buffer[9];
 
-    // Sequential write command byte
+    // Command byte for multi-write
     buffer[0] = CMD_MULTI_WRITE;
 
     for (int i = 0; i < 4; i++)
@@ -124,11 +124,14 @@ bool MCP4728::setAllChannels(uint16_t values[4], Vref vref, Gain gain, bool stor
         // Limit value to 12 bits
         values[i] &= 0x0FFF;
 
-        // Upper data bits + VREF + Gain + PD bits
-        buffer[i * 2 + 1] = ((vref & 0x01) << 7) | ((gain & 0x01) << 4) | (values[i] >> 8);
+        // First byte: VREF (bit 7) + PD1 (bit 6) + PD0 (bit 5) + GAIN (bit 4) + DATA[11:8] (bits 3-0)
+        buffer[i * 2 + 1] = ((vref & 0x01) << 7) |     // VREF bit
+                            (0x00 << 5) |              // PD1,PD0 = 00 (Normal mode)
+                            ((gain & 0x01) << 4) |     // GAIN bit
+                            ((values[i] >> 8) & 0x0F); // Upper 4 bits of DAC value
 
-        // Lower 8 bits of the 12-bit value
-        buffer[i * 2 + 2] = values[i] & 0xFF;
+        // Second byte: DATA[7:0] (bits 7-0)
+        buffer[i * 2 + 2] = values[i] & 0xFF; // Lower 8 bits of DAC value
     }
 
     // Send the data to the DAC
