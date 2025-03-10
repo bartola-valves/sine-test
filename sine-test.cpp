@@ -7,6 +7,10 @@
 
 #include "lib/MCP4728.h"
 
+/*
+ * Specifications.md has the architecture and all the design details required for this program
+ */
+
 #define I2C_PORT i2c0
 #define I2C_SDA_PIN 4   // GPIO4 (pin 6)
 #define I2C_SCL_PIN 5   // GPIO5 (pin 7)
@@ -76,6 +80,9 @@ MCP4728 dac(I2C_PORT, MCP4728_ADDR, I2C_SDA_PIN, I2C_SCL_PIN, LDAC_PIN, RDY_PIN)
  * The ISR will increment the phase accumulator and look up the sine value in the sine table.
  * The sine value is then sent to the DAC.
  * The GPIO 20 (ISR_GPIO) is toggled to measure the ISR time spent.
+ * The ISR will skip the update if the DAC is not ready.
+ *
+ * The current implementation takes 115uS to execute the ISR.
  */
 static void alarm_irq(void)
 {
@@ -123,9 +130,6 @@ static void alarm_irq(void)
     dac.triggerLDAC();
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0);
-
-    // In your alarm_irq function, before exiting:
-    isr_counter++;
 }
 
 /*
@@ -202,6 +206,5 @@ int main()
     {
         // Just monitor or do nothing
         busy_wait_ms(5000);
-        printf("ISR still running, counter: %d\n", isr_counter);
     }
 }
