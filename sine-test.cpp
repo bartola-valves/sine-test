@@ -35,16 +35,19 @@
 
 // DDS parameters
 #define two32 4294967296.0 // 2^32
-#define Fs 2000            // 2kHz sample rate (1/0.0005 seconds)
-#define DELAY 250          // 1/Fs (in microseconds). We will use 250uS instead
+// Increase sample rate from 2kHz to 5kHz
+#define Fs 5000   // 5kHz sample rate (1/0.0002 seconds)
+#define DELAY 200 // 200µs between samples (1/5000 = 0.0002)
+
 // the DDS units:
 volatile unsigned int phase_accum_main;
-volatile unsigned int phase_incr_main = (100.0 * two32) / Fs; // 100 Hz sine wave
+// Keep Fs=2000, but generate a 20Hz wave instead:
+volatile unsigned int phase_incr_main = (uint32_t)((20.0 * two32) / Fs + 0.5);
 
 uint16_t DAC_data; // output value to the DAC
 
 // DDS sine table
-#define sine_table_size 256
+#define sine_table_size 1024 // Increase from 256 to 1024
 volatile int sin_table[sine_table_size];
 
 volatile int isr_counter = 0; // to test the ISR is running correctly
@@ -76,33 +79,21 @@ static void alarm_irq(void)
     // Reset the alarm register
     timer_hw->alarm[ALARM_NUM] = timer_hw->timerawl + DELAY;
 
-    // DDS phase and sine table lookup
+    // INCREMENT THE PHASE ACCUMULATOR - this line was missing!
     phase_accum_main += phase_incr_main;
-    // The DAC is 12-bit so we need to mask the lower 12 bits and add 2048 to get a positive value.
-    // output zero is at 2048.
-    DAC_data = (sin_table[phase_accum_main >> 24] + 2048) & 0x0FFF;
+
+    uint32_t phase_index = phase_accum_main >> 22;                 // For 1024-point table
+    uint32_t fraction = (phase_accum_main >> 14) & 0xFF;           // Fractional part for interpolation
+    int v1 = sin_table[phase_index & (sine_table_size - 1)];       // Change to int (signed)
+    int v2 = sin_table[(phase_index + 1) & (sine_table_size - 1)]; // Change to int (signed)
+    int32_t interpolated = v1 + ((v2 - v1) * fraction) / 256;
+    DAC_data = (interpolated + 2048) & 0x0FFF;
 
     // Send the DAC data to the DAC on the object dac
     dac.setChannel(MCP4728::CHANNEL_A, DAC_data, MCP4728::VREF_INT, MCP4728::GAIN_1X);
 
     // De-assert the GPIO when we leave the interrupt
     gpio_put(ISR_GPIO, 0);
-}
-
-void scan_i2c()
-{
-    printf("I2C Bus Scan\n");
-    for (int addr = 0; addr < 128; addr++)
-    {
-        int ret;
-        uint8_t rxdata;
-        ret = i2c_read_blocking(I2C_PORT, addr, &rxdata, 1, false);
-        if (ret >= 0)
-        {
-            printf("Device found at address 0x%02x\n", addr);
-        }
-    }
-    printf("Scan complete\n");
 }
 
 /*
@@ -117,13 +108,12 @@ int main()
     busy_wait_ms(1000); // wait for UART to start. We will use busy_wait_ms later for delays
 
     // === build the sine lookup table =======
-    // scaled to produce values between 0 and 4096
-    int ii;
-    for (ii = 0; ii < sine_table_size; ii++)
+    // scaled to produce values between -2047 and 2047
+    for (int ii = 0; ii < sine_table_size; ii++)
     {
-        sin_table[ii] = (int)(2047 * sin((float)ii * 6.283 / (float)sine_table_size));
+        float angle = ((float)ii * 2.0 * M_PI) / (float)sine_table_size;
+        sin_table[ii] = (int)(2047.5 * sin(angle)); // Using 2047.5 gives us the full -2048 to 2047 range
     }
-
     // Initialize the GPIO for the ISR timing
     gpio_init(ISR_GPIO);
     gpio_set_dir(ISR_GPIO, GPIO_OUT);
@@ -144,9 +134,6 @@ int main()
         printf("DAC initialization failed!\n");
         // Add error handling here
     }
-
-    // Add this after i2c_init() in main()
-    scan_i2c();
 
     // Enable the interrupt for the alarm (we're using Alarm 0)
     hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
